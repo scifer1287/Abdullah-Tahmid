@@ -1,26 +1,29 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Send, Sparkles, Trash2, Heart, Plus, Menu, X, 
-  MessageSquare, Image as ImageIcon, PanelLeft, MoreVertical
+  Send, Sparkles, Trash2, Plus, X, 
+  MessageSquare, Image as ImageIcon, PanelLeft, ChevronDown
 } from 'lucide-react';
 import { GenerateContentResponse } from "@google/genai";
 import ChatMessage from './components/ChatMessage';
-import { Message, LoadingState, ChatSession } from './types';
-import { QUICK_PROMPTS } from './constants';
+import { Message, LoadingState, ChatSession, PersonaType } from './types';
+import { QUICK_PROMPTS, PERSONAS, GET_SYSTEM_INSTRUCTION } from './constants';
 import { sendMessageStream, initializeChat } from './services/geminiService';
 
 const App: React.FC = () => {
   // State
+  // Default to GURU (Prem Guru)
+  const [currentPersona, setCurrentPersona] = useState<PersonaType>('GURU');
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loadingState, setLoadingState] = useState<LoadingState>(LoadingState.IDLE);
+  const [isPersonaMenuOpen, setIsPersonaMenuOpen] = useState(false);
   
-  // Sidebar state: Initialize based on screen width
+  // Sidebar state
   const [isSidebarOpen, setIsSidebarOpen] = useState(() => {
     if (typeof window !== 'undefined') {
-      return window.innerWidth >= 1024; // Default open on large screens
+      return window.innerWidth >= 1024;
     }
     return false;
   });
@@ -31,6 +34,18 @@ const App: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const personaMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close persona menu on click outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (personaMenuRef.current && !personaMenuRef.current.contains(event.target as Node)) {
+        setIsPersonaMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // Responsive sidebar handling
   useEffect(() => {
@@ -38,16 +53,15 @@ const App: React.FC = () => {
       if (window.innerWidth < 1024) {
         setIsSidebarOpen(false);
       } else {
-        setIsSidebarOpen(true);
+        if (!isSidebarOpen) setIsSidebarOpen(true);
       }
     };
-    
-    // Only set listener, don't auto-reset on every resize to avoid annoyance
-    // window.addEventListener('resize', handleResize);
-    // return () => window.removeEventListener('resize', handleResize);
-  }, []);
 
-  // Load sessions from local storage on mount
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [isSidebarOpen]);
+
+  // Load sessions
   useEffect(() => {
     const savedSessions = localStorage.getItem('love_guru_sessions');
     if (savedSessions) {
@@ -57,22 +71,30 @@ const App: React.FC = () => {
           setSessions(parsed);
           loadSession(parsed[0].id, parsed);
         } else {
-          createNewSession();
+          createNewSession('GURU');
         }
       } catch (e) {
-        createNewSession();
+        createNewSession('GURU');
       }
     } else {
-      createNewSession();
+      createNewSession('GURU');
     }
   }, []);
 
-  // Save sessions to local storage whenever they change
+  // Save sessions
   useEffect(() => {
     if (sessions.length > 0) {
       localStorage.setItem('love_guru_sessions', JSON.stringify(sessions));
     }
   }, [sessions]);
+
+  // Handle Persona Change logic - Re-initialize chat with new system instruction but SAME history
+  useEffect(() => {
+    if (messages.length > 0) {
+        const instruction = GET_SYSTEM_INSTRUCTION(currentPersona);
+        initializeChat(messages, instruction);
+    }
+  }, [currentPersona]);
 
   // Auto-scroll
   const scrollToBottom = () => {
@@ -93,27 +115,29 @@ const App: React.FC = () => {
 
   // --- Session Management ---
 
-  const createInitialMessage = (id: string): Message => ({
+  const createInitialMessage = (id: string, persona: PersonaType): Message => ({
     id: 'init-' + id,
     role: 'model',
-    text: 'জয় বাবা ভোলানাথ! আমি প্রেম বাবা। বলো বৎস, কোন মায়ার জালে আটকে পড়েছ? প্রেমের সমস্যা, নাকি কপালে শনি? 🧘‍♂️'
+    text: PERSONAS[persona].intro
   });
 
-  const createNewSession = () => {
+  const createNewSession = (persona: PersonaType = 'GURU') => {
     const newSessionId = Date.now().toString();
-    const initialMessage = createInitialMessage(newSessionId);
+    const initialMessage = createInitialMessage(newSessionId, persona);
 
     const newSession: ChatSession = {
       id: newSessionId,
       title: 'নতুন ভক্ত',
       messages: [initialMessage],
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      persona: persona
     };
 
     setSessions(prev => [newSession, ...prev]);
     setCurrentSessionId(newSessionId);
     setMessages([initialMessage]);
-    initializeChat([initialMessage]);
+    setCurrentPersona(persona);
+    initializeChat([initialMessage], GET_SYSTEM_INSTRUCTION(persona));
     
     // On mobile, close sidebar after creating new chat
     if (window.innerWidth < 1024) {
@@ -126,9 +150,23 @@ const App: React.FC = () => {
     if (session) {
       setCurrentSessionId(sessionId);
       setMessages(session.messages);
-      initializeChat(session.messages);
       
-      // On mobile, close sidebar after selecting
+      // Handle legacy personas mapping
+      let sessionPersona = (session.persona as string) || 'GURU';
+      
+      // Migration logic for old keys
+      if (sessionPersona === 'BABA') sessionPersona = 'GURU';
+      if (sessionPersona === 'MAULA') sessionPersona = 'PEER';
+      
+      // Safety check
+      if (sessionPersona !== 'GURU' && sessionPersona !== 'PEER') {
+        sessionPersona = 'GURU';
+      }
+
+      const validatedPersona = sessionPersona as PersonaType;
+      setCurrentPersona(validatedPersona);
+      initializeChat(session.messages, GET_SYSTEM_INSTRUCTION(validatedPersona));
+      
       if (window.innerWidth < 1024) {
         setIsSidebarOpen(false);
       }
@@ -136,36 +174,33 @@ const App: React.FC = () => {
   };
 
   const deleteSession = (e: React.MouseEvent, sessionId: string) => {
-    e.stopPropagation(); // Stop click from triggering loadSession on the parent div
+    e.stopPropagation();
     
     if (window.confirm('এই চ্যাটটি ডিলিট করতে চান?')) {
       const remainingSessions = sessions.filter(s => s.id !== sessionId);
       
       if (remainingSessions.length === 0) {
-        // If we deleted the last session, immediately create a new one manually
-        const newId = Date.now().toString();
-        const initialMessage = createInitialMessage(newId);
+        // Explicitly create a new session state without relying on 'prev' state
+        // to avoid race conditions or appending to the list we just meant to empty.
+        const newSessionId = Date.now().toString();
+        const initialMessage = createInitialMessage(newSessionId, currentPersona);
         const newSession: ChatSession = {
-          id: newId,
-          title: 'নতুন ভক্ত',
-          messages: [initialMessage],
-          createdAt: Date.now()
+            id: newSessionId,
+            title: 'নতুন ভক্ত',
+            messages: [initialMessage],
+            createdAt: Date.now(),
+            persona: currentPersona
         };
         
         setSessions([newSession]);
-        setCurrentSessionId(newId);
+        setCurrentSessionId(newSessionId);
         setMessages([initialMessage]);
-        initializeChat([initialMessage]);
+        initializeChat([initialMessage], GET_SYSTEM_INSTRUCTION(currentPersona));
       } else {
-        // If there are sessions left
         setSessions(remainingSessions);
-        
-        // If we deleted the currently active session, switch to the first available one
         if (currentSessionId === sessionId) {
           const nextSession = remainingSessions[0];
-          setCurrentSessionId(nextSession.id);
-          setMessages(nextSession.messages);
-          initializeChat(nextSession.messages);
+          loadSession(nextSession.id, remainingSessions);
         }
       }
     }
@@ -183,7 +218,7 @@ const App: React.FC = () => {
             title = firstUserMsg.text.slice(0, 30) + (firstUserMsg.text.length > 30 ? '...' : '');
           }
         }
-        return { ...session, messages: updatedMessages, title };
+        return { ...session, messages: updatedMessages, title, persona: currentPersona };
       }
       return session;
     }));
@@ -194,7 +229,7 @@ const App: React.FC = () => {
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (file.size > 5 * 1024 * 1024) { // 5MB limit
+      if (file.size > 5 * 1024 * 1024) {
         alert("File too large. Please select an image under 5MB.");
         return;
       }
@@ -221,7 +256,6 @@ const App: React.FC = () => {
       image: selectedImage || undefined
     };
     
-    // Optimistic Update
     const updatedMessages = [...messages, newUserMsg];
     setMessages(updatedMessages);
     updateCurrentSession(updatedMessages);
@@ -230,13 +264,15 @@ const App: React.FC = () => {
     setSelectedImage(null);
     setLoadingState(LoadingState.LOADING);
 
-    // Bot Placeholder
     const botMsgId = (Date.now() + 1).toString();
     const botPlaceholder: Message = { id: botMsgId, role: 'model', text: '' };
     setMessages(prev => [...prev, botPlaceholder]);
 
     try {
-      const stream = await sendMessageStream(newUserMsg.text, newUserMsg.image);
+      // Ensure chat is initialized with correct system instruction for current persona
+      const instruction = GET_SYSTEM_INSTRUCTION(currentPersona);
+      
+      const stream = await sendMessageStream(newUserMsg.text, newUserMsg.image, instruction);
       setLoadingState(LoadingState.STREAMING);
 
       let fullText = '';
@@ -263,7 +299,7 @@ const App: React.FC = () => {
       console.error("Error in chat loop:", error);
       setMessages(prev => {
         const errMsgs = prev.map(msg => 
-          msg.id === botMsgId ? { ...msg, text: "বৎস, ইন্টারনেটের মায়ার কারণে সংযোগ বিচ্ছিন্ন হয়েছে। আবার চেষ্টা করো।", isError: true } : msg
+          msg.id === botMsgId ? { ...msg, text: "দুঃখিত, সংযোগ বিচ্ছিন্ন হয়েছে। আবার চেষ্টা করো।", isError: true } : msg
         );
         updateCurrentSession(errMsgs);
         return errMsgs;
@@ -283,6 +319,8 @@ const App: React.FC = () => {
 
   const toggleSidebar = () => setIsSidebarOpen(!isSidebarOpen);
 
+  const activePersonaConfig = PERSONAS[currentPersona];
+
   return (
     <div className="flex h-screen bg-[#f3f4f6] overflow-hidden font-sans text-gray-900">
       
@@ -295,12 +333,11 @@ const App: React.FC = () => {
         onClick={() => setIsSidebarOpen(false)}
       />
 
-      {/* Sidebar - Desktop: Relative/Width transition | Mobile: Fixed/Translate transition */}
+      {/* Sidebar */}
       <aside 
         className={`
           z-50 h-full bg-white border-r border-gray-100 flex flex-col flex-shrink-0
           transition-all duration-300 ease-[cubic-bezier(0.25,0.1,0.25,1.0)]
-          ${/* Mobile specific styles */ ''}
           fixed inset-y-0 left-0 md:relative md:inset-auto
           ${isSidebarOpen 
             ? 'translate-x-0 w-[280px] shadow-2xl md:shadow-none' 
@@ -311,11 +348,11 @@ const App: React.FC = () => {
         <div className="w-[280px] flex flex-col h-full bg-[#FAFAFA]">
           {/* Sidebar Header */}
           <div className="p-5 flex items-center justify-between">
-            <div className="flex items-center gap-2.5 text-orange-600 font-bold text-xl tracking-tight">
-              <div className="bg-gradient-to-tr from-orange-500 to-amber-500 p-1.5 rounded-lg text-white shadow-lg shadow-orange-500/30">
-                <Sparkles size={20} fill="currentColor" />
+            <div className="flex items-center gap-2.5 text-gray-800 font-bold text-xl tracking-tight">
+              <div className={`bg-gradient-to-tr ${activePersonaConfig.color} p-1.5 rounded-lg text-white shadow-lg`}>
+                {activePersonaConfig.icon}
               </div>
-              <span>প্রেম বাবা</span>
+              <span>লাভ গুরু AI</span>
             </div>
             <button 
               onClick={() => setIsSidebarOpen(false)} 
@@ -327,8 +364,8 @@ const App: React.FC = () => {
 
           <div className="px-4 pb-4">
             <button 
-              onClick={createNewSession}
-              className="w-full group flex items-center justify-center gap-2.5 bg-white border border-gray-200 text-gray-700 py-3 px-4 rounded-xl font-medium shadow-sm hover:shadow-md hover:border-orange-200 hover:text-orange-600 transition-all active:scale-[0.98]"
+              onClick={() => createNewSession(currentPersona)}
+              className="w-full group flex items-center justify-center gap-2.5 bg-white border border-gray-200 text-gray-700 py-3 px-4 rounded-xl font-medium shadow-sm hover:shadow-md hover:border-gray-300 hover:text-gray-900 transition-all active:scale-[0.98]"
             >
               <Plus size={18} className="group-hover:rotate-90 transition-transform duration-300" />
               নতুন ভক্তের আগমন
@@ -348,20 +385,22 @@ const App: React.FC = () => {
                 className={`
                   group relative flex items-center gap-3 p-3 rounded-xl cursor-pointer transition-all duration-200
                   ${currentSessionId === session.id 
-                    ? 'bg-orange-50 text-orange-900 shadow-sm ring-1 ring-orange-100' 
+                    ? 'bg-white shadow-sm ring-1 ring-gray-200' 
                     : 'hover:bg-gray-100 text-gray-600 hover:text-gray-900'
                   }
                 `}
               >
-                <MessageSquare 
-                  size={18} 
-                  className={`flex-shrink-0 ${currentSessionId === session.id ? 'text-orange-500' : 'text-gray-400 group-hover:text-gray-500'}`} 
-                />
+                <div className={`${currentSessionId === session.id ? 'text-gray-800' : 'text-gray-400'}`}>
+                    {/* Handle potential legacy persona keys in rendering icon */}
+                    {session.persona && PERSONAS[session.persona as PersonaType] 
+                        ? PERSONAS[session.persona as PersonaType].icon 
+                        : (session.persona === 'MAULA' ? PERSONAS['PEER'].icon : PERSONAS['GURU'].icon)
+                    }
+                </div>
                 <div className="flex-1 min-w-0 pr-6">
-                  <p className="text-[14px] font-medium truncate">{session.title}</p>
+                  <p className={`text-[14px] font-medium truncate ${currentSessionId === session.id ? 'text-gray-800' : ''}`}>{session.title}</p>
                 </div>
                 
-                {/* Delete button appears on hover - fixed z-index and click handling */}
                 <button 
                   onClick={(e) => deleteSession(e, session.id)}
                   className={`
@@ -376,52 +415,92 @@ const App: React.FC = () => {
               </div>
             ))}
           </div>
-
-          {/* Sidebar Footer */}
-          <div className="p-4 border-t border-gray-200/60 bg-white/50 text-center">
-            <p className="text-xs text-gray-400">Blessings for You 🙏</p>
-          </div>
         </div>
       </aside>
 
       {/* Main Content Area */}
-      <main className="flex-1 flex flex-col h-full relative w-full bg-white">
+      <main className="flex-1 flex flex-col h-full relative w-full bg-white transition-all duration-300">
         
-        {/* Header (Glass) */}
+        {/* Header */}
         <header className="absolute top-0 inset-x-0 z-30 h-16 flex items-center justify-between px-4 md:px-6 bg-white/80 backdrop-blur-md border-b border-gray-100/50">
           <div className="flex items-center gap-3">
             <button 
               onClick={toggleSidebar}
               className="p-2 -ml-2 text-gray-500 hover:bg-gray-100 hover:text-gray-800 rounded-lg transition-colors"
-              title={isSidebarOpen ? "সাইডবার বন্ধ করুন" : "সাইডবার খুলুন"}
+              title={isSidebarOpen ? "Close Sidebar" : "Open Sidebar"}
             >
               <PanelLeft size={20} />
             </button>
-            <h1 className="font-semibold text-gray-800 text-lg truncate max-w-[200px] md:max-w-md">
-              {sessions.find(s => s.id === currentSessionId)?.title || 'প্রেম বাবা AI'}
-            </h1>
+            
+            {/* Persona Selector Dropdown */}
+            <div className="relative" ref={personaMenuRef}>
+              <button 
+                onClick={() => setIsPersonaMenuOpen(!isPersonaMenuOpen)}
+                className="flex items-center gap-2 p-1.5 pr-3 rounded-xl hover:bg-gray-100 transition-colors border border-transparent hover:border-gray-200"
+              >
+                 <div className={`p-1.5 rounded-lg bg-gradient-to-tr ${activePersonaConfig.color} text-white`}>
+                    {activePersonaConfig.icon}
+                 </div>
+                 <div className="text-left hidden xs:block">
+                     <p className="text-sm font-bold text-gray-800 leading-tight">{activePersonaConfig.name}</p>
+                     <p className="text-[10px] text-gray-500 font-medium leading-tight">{activePersonaConfig.subLabel}</p>
+                 </div>
+                 <ChevronDown size={14} className="text-gray-400 ml-1" />
+              </button>
+
+              {isPersonaMenuOpen && (
+                  <div className="absolute top-full left-0 mt-2 w-60 bg-white rounded-2xl shadow-xl border border-gray-100 p-2 animate-in fade-in zoom-in-95 duration-200">
+                      <p className="px-3 py-2 text-[11px] font-bold text-gray-400 uppercase tracking-wider">Choose Guru Style</p>
+                      {Object.values(PERSONAS).map((persona) => (
+                          <button
+                              key={persona.id}
+                              onClick={() => {
+                                  setCurrentPersona(persona.id);
+                                  setIsPersonaMenuOpen(false);
+                              }}
+                              className={`w-full flex items-center gap-3 p-3 rounded-xl text-left transition-all ${
+                                  currentPersona === persona.id 
+                                  ? 'bg-gray-50 ring-1 ring-gray-200' 
+                                  : 'hover:bg-gray-50'
+                              }`}
+                          >
+                              <div className={`p-2 rounded-lg bg-gradient-to-tr ${persona.color} text-white`}>
+                                  {persona.icon}
+                              </div>
+                              <div>
+                                  <p className="font-bold text-gray-800 text-sm">{persona.name}</p>
+                                  <p className="text-xs text-gray-500">{persona.subLabel}</p>
+                              </div>
+                              {currentPersona === persona.id && (
+                                  <div className="ml-auto w-2 h-2 rounded-full bg-green-500"></div>
+                              )}
+                          </button>
+                      ))}
+                  </div>
+              )}
+            </div>
           </div>
           
           <div className="flex items-center gap-2">
-            <div className="hidden md:flex items-center gap-1.5 px-3 py-1 bg-orange-50 text-orange-600 rounded-full text-xs font-bold">
-              <Sparkles size={12} />
-              <span>Baba Mode Active</span>
+            <div className={`hidden md:flex items-center gap-1.5 px-3 py-1 bg-gray-50 border border-gray-100 rounded-full text-xs font-bold text-gray-600`}>
+              {activePersonaConfig.icon}
+              <span>{activePersonaConfig.name} Mode Active</span>
             </div>
           </div>
         </header>
 
-        {/* Chat Area (Scrollable) */}
+        {/* Chat Area */}
         <div className="flex-1 overflow-y-auto pt-20 pb-4 px-4 md:px-0 scroll-smooth">
           <div className="max-w-3xl mx-auto min-h-full flex flex-col justify-end">
             
             {messages.length === 0 ? (
                <div className="flex flex-col items-center justify-center h-[60vh] text-center p-8 animate-in fade-in zoom-in duration-500">
-                 <div className="w-20 h-20 bg-gradient-to-br from-orange-100 to-amber-100 rounded-3xl flex items-center justify-center mb-6 shadow-lg shadow-orange-100">
-                    <Sparkles size={40} className="text-orange-500" />
+                 <div className={`w-20 h-20 bg-gradient-to-br ${activePersonaConfig.color} rounded-3xl flex items-center justify-center mb-6 shadow-xl shadow-gray-200`}>
+                    <div className="text-white transform scale-150">{activePersonaConfig.icon}</div>
                  </div>
-                 <h2 className="text-2xl font-bold text-gray-800 mb-2">নমস্কার! আমি প্রেম বাবা</h2>
+                 <h2 className="text-2xl font-bold text-gray-800 mb-2">নমস্কার! আমি {activePersonaConfig.name}</h2>
                  <p className="text-gray-500 max-w-md">
-                   বলো বৎস, কোন মায়ার জালে আটকে পড়েছ? প্রেমের সমস্যা, নাকি কপালে শনি?
+                   {activePersonaConfig.intro}
                  </p>
                </div>
             ) : (
@@ -433,9 +512,9 @@ const App: React.FC = () => {
                 {loadingState === LoadingState.LOADING && (
                   <div className="flex justify-start animate-in fade-in slide-in-from-bottom-2 duration-300">
                     <div className="bg-white px-5 py-4 rounded-3xl rounded-bl-none shadow-sm border border-gray-100 flex items-center gap-1.5">
-                      <span className="w-2 h-2 bg-orange-400 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
-                      <span className="w-2 h-2 bg-orange-400 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
-                      <span className="w-2 h-2 bg-orange-400 rounded-full animate-bounce"></span>
+                      <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
+                      <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
+                      <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce"></span>
                     </div>
                   </div>
                 )}
@@ -445,20 +524,19 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        {/* Input Area (Floating) */}
+        {/* Input Area */}
         <footer className="flex-none p-4 md:p-6 z-20 bg-gradient-to-t from-white via-white to-transparent">
           <div className="max-w-3xl mx-auto space-y-4">
             
-            {/* Quick Prompts - Only show on empty chat or very short chat */}
             {messages.length <= 2 && (
               <div className="flex gap-2.5 overflow-x-auto pb-2 scrollbar-hide no-scrollbar -mx-4 px-4 md:mx-0 md:px-0">
                 {QUICK_PROMPTS.map(qp => (
                   <button
                     key={qp.id}
                     onClick={() => handleSendMessage(qp.prompt)}
-                    className="flex-none flex items-center gap-2 px-4 py-2 bg-white hover:bg-orange-50 text-gray-600 hover:text-orange-600 text-[13px] font-medium rounded-2xl border border-gray-200 hover:border-orange-200 transition-all shadow-sm hover:shadow-md hover:-translate-y-0.5"
+                    className={`flex-none flex items-center gap-2 px-4 py-2 bg-white hover:bg-gray-50 text-gray-600 hover:text-gray-900 text-[13px] font-medium rounded-2xl border border-gray-200 hover:border-gray-300 transition-all shadow-sm hover:shadow-md hover:-translate-y-0.5`}
                   >
-                    <span className="text-orange-500">{qp.icon}</span>
+                    <span className="text-gray-500">{qp.icon}</span>
                     {qp.label}
                   </button>
                 ))}
@@ -481,11 +559,11 @@ const App: React.FC = () => {
             )}
 
             {/* Input Bar */}
-            <div className="relative flex items-end gap-2 bg-white p-2 rounded-[28px] shadow-[0_8px_30px_rgb(0,0,0,0.06)] border border-gray-100 focus-within:ring-2 focus-within:ring-orange-500/10 focus-within:border-orange-200 transition-all">
+            <div className="relative flex items-end gap-2 bg-white p-2 rounded-[28px] shadow-[0_8px_30px_rgb(0,0,0,0.06)] border border-gray-100 focus-within:ring-2 focus-within:ring-gray-100 focus-within:border-gray-300 transition-all">
               
               <button 
                 onClick={() => fileInputRef.current?.click()}
-                className="p-3.5 text-gray-400 hover:text-orange-500 hover:bg-orange-50 rounded-full transition-colors self-end mb-0.5"
+                className="p-3.5 text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded-full transition-colors self-end mb-0.5"
                 title="ছবি আপলোড করুন"
               >
                 <ImageIcon size={22} strokeWidth={2} />
@@ -503,7 +581,7 @@ const App: React.FC = () => {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder={selectedImage ? "এই ছবি সম্পর্কে কি জানতে চান?" : "বাবাকে মনের কথা খুলে বলো..."}
+                placeholder={selectedImage ? "এই ছবি সম্পর্কে কি জানতে চান?" : `${activePersonaConfig.name}-কে মনের কথা খুলে বলো...`}
                 className="flex-1 bg-transparent border-none focus:ring-0 resize-none max-h-32 min-h-[52px] py-3.5 px-2 text-gray-800 placeholder-gray-400 text-[15px] leading-relaxed"
                 rows={1}
               />
@@ -515,7 +593,7 @@ const App: React.FC = () => {
                   mb-1 p-3 rounded-full flex items-center justify-center transition-all duration-300
                   ${(!input.trim() && !selectedImage || loadingState !== LoadingState.IDLE)
                     ? 'bg-gray-100 text-gray-300 cursor-not-allowed'
-                    : 'bg-gradient-to-r from-orange-500 to-amber-600 text-white shadow-lg shadow-orange-500/30 hover:shadow-xl hover:scale-105 active:scale-95'
+                    : `bg-gradient-to-r ${activePersonaConfig.color} text-white shadow-lg hover:shadow-xl hover:scale-105 active:scale-95`
                   }
                 `}
               >
@@ -530,7 +608,7 @@ const App: React.FC = () => {
             
             <div className="text-center">
               <p className="text-[11px] text-gray-300">
-                বাবার কথা সবসময় সিরিয়াসলি নিও না বৎস। সব মায়া।
+                AI ভুল করতে পারে, দয়া করে সিরিয়াসলি নেবেন না।
               </p>
             </div>
           </div>

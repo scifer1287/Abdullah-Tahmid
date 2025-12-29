@@ -13,6 +13,7 @@ export interface ChatSession {
   title: string;
   messages: Message[];
   createdAt: number;
+  persona?: PersonaType; // Track which persona was active
 }
 
 export enum LoadingState {
@@ -26,4 +27,15 @@ export interface QuickPrompt {
   label: string;
   prompt: string;
   icon: React.ReactNode;
+}
+
+export type PersonaType = 'GURU' | 'PEER';
+
+export interface PersonaDefinition {
+  id: PersonaType;
+  name: string;
+  subLabel: string;
+  icon: React.ReactNode;
+  color: string;
+  intro: string;
 }

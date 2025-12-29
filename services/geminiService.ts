@@ -1,13 +1,12 @@
 import { GoogleGenAI, Chat, GenerateContentResponse } from "@google/genai";
-import { SYSTEM_INSTRUCTION } from '../constants';
 import { Message } from '../types';
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 let chatSession: Chat | null = null;
 
-// Initialize chat, optionally with history
-export const initializeChat = (historyMessages: Message[] = []) => {
+// Initialize chat, optionally with history and specific system instruction
+export const initializeChat = (historyMessages: Message[] = [], systemInstruction: string) => {
   // Convert our Message format to Gemini API history format
   // Note: We filter out error messages and valid parts
   const formattedHistory = historyMessages
@@ -42,17 +41,18 @@ export const initializeChat = (historyMessages: Message[] = []) => {
   chatSession = ai.chats.create({
     model: 'gemini-3-flash-preview',
     config: {
-      systemInstruction: SYSTEM_INSTRUCTION,
-      temperature: 0.8,
+      systemInstruction: systemInstruction,
+      temperature: 0.9, // Slightly higher for more creativity in personas
       topK: 40,
     },
     history: formattedHistory
   });
 };
 
-export const sendMessageStream = async (text: string, image?: string): Promise<AsyncIterable<GenerateContentResponse>> => {
-  if (!chatSession) {
-    initializeChat();
+export const sendMessageStream = async (text: string, image?: string, systemInstructionOverride?: string): Promise<AsyncIterable<GenerateContentResponse>> => {
+  // If session doesn't exist or we strictly need to re-init (though usually handled by caller), init it.
+  if (!chatSession && systemInstructionOverride) {
+    initializeChat([], systemInstructionOverride);
   }
   
   try {
@@ -85,8 +85,8 @@ export const sendMessageStream = async (text: string, image?: string): Promise<A
     return result;
   } catch (error) {
     console.error("Error sending message to Gemini:", error);
-    // Attempt recovery
-    initializeChat();
+    // If we have an override, try to re-init and retry? 
+    // For simplicity, we just throw, and the UI handles the error state.
     throw error;
   }
 };
