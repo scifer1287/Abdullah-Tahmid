@@ -394,7 +394,7 @@ const App: React.FC = () => {
                     {/* Handle potential legacy persona keys in rendering icon */}
                     {session.persona && PERSONAS[session.persona as PersonaType] 
                         ? PERSONAS[session.persona as PersonaType].icon 
-                        : (session.persona === 'MAULA' ? PERSONAS['PEER'].icon : PERSONAS['GURU'].icon)
+                        : ((session.persona as any) === 'MAULA' ? PERSONAS['PEER'].icon : PERSONAS['GURU'].icon)
                     }
                 </div>
                 <div className="flex-1 min-w-0 pr-6">
